@@ -1,6 +1,6 @@
 /* ============================================================
    server.js — เซิร์ฟเวอร์ฐานข้อมูลกลางสำหรับ "แผนการทำงาน สาย 3"
-   - เก็บข้อมูลทั้งก้อน (snapshot) ไว้บน Turso (SQLite บนคลาวด์) ข้อมูลไม่หาย
+   - เก็บข้อมูลทั้งก้อน (snapshot) ไว้บน Turso (SQLite บนคลาวด์)
    - เสิร์ฟหน้าเว็บ (index.html + support.js + data/seed.js + header.jpg)
    - API:  GET /api/state   → ดึงข้อมูลล่าสุด (JSON)
            POST /api/state  → บันทึกข้อมูลทั้งก้อน (JSON)
@@ -8,35 +8,59 @@
    ตั้งค่า Environment Variables 2 ตัวบน Render:
      TURSO_URL         = libsql://xxxx.turso.io
      TURSO_AUTH_TOKEN  = <token จาก turso>
-   Start Command บน Render:  node server.js   (หรือ yarn start)
+   Start Command บน Render:  node server.js
+
+   หมายเหตุ: ถ้ายังไม่ได้ตั้งค่า Turso เซิร์ฟเวอร์ "จะไม่ล่ม" แต่จะทำงานโหมดออฟไลน์
+   (หน้าเว็บเปิดได้ แต่ยังไม่บันทึกออนไลน์) จนกว่าจะเพิ่ม env แล้ว deploy ใหม่
    ============================================================ */
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { createClient } = require('@libsql/client');
 
 const PORT = process.env.PORT || 3000;
 const DIR = __dirname;
 const HTML_FILE = 'index.html';
 
-if (!process.env.TURSO_URL) {
-  console.error('** ยังไม่ได้ตั้งค่า TURSO_URL / TURSO_AUTH_TOKEN **');
-  console.error('   ไปที่ Render > Environment แล้วเพิ่มค่าทั้งสอง');
+/* ---------- เชื่อม Turso แบบกันพัง ---------- */
+let db = null;
+let dbStatus = 'ยังไม่ได้ตั้งค่า';
+function initTurso() {
+  if (!process.env.TURSO_URL || !process.env.TURSO_AUTH_TOKEN) {
+    dbStatus = 'ยังไม่ได้ตั้งค่า TURSO_URL / TURSO_AUTH_TOKEN (โหมดออฟไลน์)';
+    console.error('** ' + dbStatus + ' **');
+    return;
+  }
+  try {
+    const { createClient } = require('@libsql/client');
+    db = createClient({ url: process.env.TURSO_URL, authToken: process.env.TURSO_AUTH_TOKEN });
+    dbStatus = 'เชื่อม Turso แล้ว';
+  } catch (e) {
+    db = null;
+    dbStatus = 'เชื่อม Turso ไม่สำเร็จ: ' + (e && e.message || e);
+    console.error('** ' + dbStatus + ' **');
+  }
 }
-const db = createClient({ url: process.env.TURSO_URL, authToken: process.env.TURSO_AUTH_TOKEN });
-
 async function initDb() {
-  await db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, ts INTEGER)");
+  if (!db) return;
+  try { await db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, ts INTEGER)"); }
+  catch (e) { console.error('สร้างตารางไม่สำเร็จ:', e && e.message || e); }
 }
 async function getState() {
-  const r = await db.execute({ sql: "SELECT v FROM kv WHERE k='state'" });
-  return r.rows.length ? String(r.rows[0].v) : null;
+  if (!db) return null;
+  try {
+    const r = await db.execute({ sql: "SELECT v FROM kv WHERE k='state'" });
+    return r.rows.length ? String(r.rows[0].v) : null;
+  } catch (e) { console.error('อ่านข้อมูลไม่สำเร็จ:', e && e.message || e); return null; }
 }
 async function setState(json) {
-  await db.execute({
-    sql: "INSERT INTO kv(k,v,ts) VALUES('state',?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, ts=excluded.ts",
-    args: [json, Date.now()],
-  });
+  if (!db) return false;
+  try {
+    await db.execute({
+      sql: "INSERT INTO kv(k,v,ts) VALUES('state',?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, ts=excluded.ts",
+      args: [json, Date.now()],
+    });
+    return true;
+  } catch (e) { console.error('บันทึกข้อมูลไม่สำเร็จ:', e && e.message || e); return false; }
 }
 
 /* ---------- static ---------- */
@@ -62,8 +86,10 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-  const url = new URL(req.url, 'http://x');
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch (e) { res.writeHead(400); return res.end('bad url'); }
   try {
+    if (url.pathname === '/api/health') return sendJSON(res, 200, { ok: true, db: dbStatus });
     if (url.pathname === '/api/state' && req.method === 'GET') {
       const v = await getState();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -73,16 +99,20 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       let parsed; try { parsed = JSON.parse(body); } catch (e) { return sendJSON(res, 400, { ok:false, error:'bad json' }); }
       if (!parsed || !Array.isArray(parsed.entries)) return sendJSON(res, 400, { ok:false, error:'no entries' });
-      await setState(JSON.stringify(parsed));
-      return sendJSON(res, 200, { ok:true, entries: parsed.entries.length });
+      const ok = await setState(JSON.stringify(parsed));
+      return sendJSON(res, ok ? 200 : 503, { ok, entries: parsed.entries.length, db: dbStatus });
     }
     return serveStatic(res, url.pathname);
   } catch (err) {
     console.error(err);
-    sendJSON(res, 500, { ok:false, error: String(err && err.message || err) });
+    try { sendJSON(res, 500, { ok:false, error: String(err && err.message || err) }); } catch (e) {}
   }
 });
 
-initDb().then(() => {
-  server.listen(PORT, () => console.log('ฐานข้อมูลกลางพร้อม · เปิดที่พอร์ต ' + PORT));
-}).catch(e => { console.error('initDb error:', e); server.listen(PORT); });
+/* กันพังทุกกรณี: log แล้วไปต่อ ไม่ให้ process exit */
+process.on('uncaughtException', e => console.error('uncaughtException:', e && e.message || e));
+process.on('unhandledRejection', e => console.error('unhandledRejection:', e && e.message || e));
+
+initTurso();
+server.listen(PORT, () => console.log('เปิดที่พอร์ต ' + PORT + ' · ฐานข้อมูล: ' + dbStatus));
+initDb();
