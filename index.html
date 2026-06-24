@@ -191,8 +191,6 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;paddi
 
   <div class="toolbar">
     <span class="savehint"><span class="pip"></span> <span id="syncdot">⚪ ออฟไลน์ (เก็บในเครื่อง)</span></span>
-    <button class="btn" id="btn-push">⬆️ ส่งขึ้นกลาง</button>
-    <button class="btn" id="btn-pull">⬇️ ดึงจากกลาง</button>
     <button class="btn" id="btn-export">⬇️ ดาวน์โหลดเป็น Excel</button>
   </div>
 
@@ -656,30 +654,13 @@ class Component extends DCLogic {
     localStorage.setItem(KEY,JSON.stringify(state));return true;}
   function renderAllSafe(){try{refreshTeamSelects();}catch(e){}try{refreshActSelects();}catch(e){}renderSummary();renderReport();renderTeam();renderManage();renderEntry("pl","plan");renderEntry("ac","actual");}
   async function loadFromServer(){const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
-    if(d&&Array.isArray(d.entries)&&d.entries.length){lastServer=stateSig(d);applyServer(d);renderAllSafe();}}
+    if(d&&Array.isArray(d.entries)&&d.entries.length){lastServer=stateSig(d);applyServer(d);renderAllSafe();}
+    else if(state.entries&&state.entries.length){const body=stateSig(state);try{const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.ok)lastServer=body;}catch(e){}}}
   async function poll(){const a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))return;
     const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
-    if(!d||!Array.isArray(d.entries))return;const sig=stateSig(d);if(sig===lastServer)return;lastServer=sig;applyServer(d);renderAllSafe();}
+    if(d&&Array.isArray(d.entries)&&d.entries.length){const sig=stateSig(d);if(sig!==lastServer){lastServer=sig;applyServer(d);renderAllSafe();}}
+    else if(state.entries&&state.entries.length){const body=stateSig(state);try{const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.ok)lastServer=body;}catch(e){}}}
   const _save=save;save=function(){_save();pushState();};
-  /* ปุ่มกดเอง: ส่งขึ้นกลาง / ดึงจากกลาง (เห็นผลชัด) */
-  $("btn-push").addEventListener("click",async()=>{
-    if(!(state.entries&&state.entries.length)){alert("เครื่องนี้ยังไม่มีข้อมูลให้ส่ง");return;}
-    if(!confirm("ส่งข้อมูลเครื่องนี้ ("+state.entries.length+" รายการ) ขึ้นฐานกลาง?\n⚠️ ข้อมูลกลางเดิมจะถูกเขียนทับทั้งหมด"))return;
-    try{const body=stateSig(state);const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});
-      const j=await r.json().catch(()=>({}));
-      if(r.ok){setOnline(true);lastServer=body;alert("✅ ส่งขึ้นฐานกลางสำเร็จ "+(j.entries!=null?j.entries:state.entries.length)+" รายการ\nเครื่องอื่นกด \"ดึงจากกลาง\" หรือรอ 4 วินาทีจะเห็นตรงกัน");}
-      else alert("❌ ส่งไม่สำเร็จ: "+(j.db||("สถานะ "+r.status)));
-    }catch(e){alert("❌ ต่อฐานข้อมูลไม่ได้: "+(e&&e.message||e));}
-  });
-  $("btn-pull").addEventListener("click",async()=>{
-    const d=await apiGet();
-    if(d===null){setOnline(false);alert("❌ ต่อฐานข้อมูลกลางไม่ได้");return;}
-    setOnline(true);
-    if(d&&Array.isArray(d.entries)&&d.entries.length){
-      if(state.entries.length&&!confirm("ดึงข้อมูลจากฐานกลาง ("+d.entries.length+" รายการ) มาแทนข้อมูลในเครื่องนี้?"))return;
-      lastServer=stateSig(d);applyServer(d);renderAllSafe();alert("✅ ดึงจากฐานกลางแล้ว "+d.entries.length+" รายการ");}
-    else alert("ฐานกลางยังว่าง (ยังไม่มีใครกด \"ส่งขึ้นกลาง\")");
-  });
   loadFromServer();setInterval(poll,4000);
   }
 }
