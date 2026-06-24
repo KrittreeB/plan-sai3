@@ -639,29 +639,53 @@ class Component extends DCLogic {
   const n=new Date();$("todaytxt").textContent=`แผน vs เกิดจริง · สรุปรายวัน/สัปดาห์/เดือน/ปี · วันนี้ ${n.getDate()} ${THSHORT[n.getMonth()]} ${String((n.getFullYear()+543)%100).padStart(2,"0")}`;
   renderSummary();renderReport();renderTeam();renderManage();renderEntry("pl","plan");renderEntry("ac","actual");
 
-  /* ===== ซิงก์ฐานข้อมูลกลาง (เซิร์ฟเวอร์ + Turso) — โหมด snapshot ทั้งก้อน ===== */
+  /* ===== ซิงก์ฐานข้อมูลกลาง (เซิร์ฟเวอร์ + Turso) — โหมดรายช่อง (per-record) ===== */
   const API_BASE=(location.protocol==="file:")?"":location.origin;
-  let online=false,lastServer="";
-  function stateSig(d){return JSON.stringify({entries:d.entries,acts:d.acts,team:d.team,roster:d.roster,seedVer:d.seedVer});}
+  let online=false;
   function setOnline(b){online=b;const el=$("syncdot");if(el)el.textContent=b?"🟢 ออนไลน์ (ฐานข้อมูลกลาง)":"⚪ ออฟไลน์ (เก็บในเครื่อง)";}
+  function entKey(e){return e.date+"|"+e.no+"|"+e.sz;}
+  function entSig(e){return (e.z==null?"":e.z)+"|"+(+e.plan||0)+"|"+(+e.actual||0)+"|"+(e.note||"");}
+  function metaSig(){return JSON.stringify({acts:state.acts,roster:state.roster,team:state.team});}
+  function serverSig(d){return JSON.stringify({e:(d.entries||[]).map(x=>entKey(x)+":"+entSig(x)).sort(),a:d.acts,r:d.roster,t:d.team});}
+  let _pushed=new Map(),_metaSig="",_lastSrv="";
   async function apiGet(){try{const r=await fetch(API_BASE+"/api/state",{cache:"no-store"});if(!r.ok)return null;return await r.json();}catch(e){return null;}}
-  let _pt;function pushState(){clearTimeout(_pt);_pt=setTimeout(async()=>{
-    try{const body=stateSig(state);const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});setOnline(r.ok);if(r.ok)lastServer=body;}catch(e){setOnline(false);}
-  },700);}
-  function applyServer(d){if(!d||!Array.isArray(d.entries))return false;
-    state.entries=d.entries;if(Array.isArray(d.acts)&&d.acts.length)state.acts=d.acts;if(Array.isArray(d.roster)&&d.roster.length)state.roster=d.roster;if(d.team)state.team=d.team;
-    TEAM=state.roster||TEAM;ACTIVITIES=state.acts;recomputeZones();nextId=state.entries.reduce((m,e)=>Math.max(m,e.id||0),0)+1;
-    localStorage.setItem(KEY,JSON.stringify(state));return true;}
+  const _et={};
+  function apiEntry(e){const k=entKey(e);clearTimeout(_et[k]);_et[k]=setTimeout(async()=>{
+    try{const r=await fetch(API_BASE+"/api/entry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:e.id,date:e.date,no:e.no,z:e.z,sz:e.sz,plan:e.plan,actual:e.actual,note:e.note||""})});setOnline(r.ok);}catch(_){setOnline(false);}
+  },400);}
+  function apiDel(k){const p=k.split("|");clearTimeout(_et[k]);_et[k]=setTimeout(async()=>{
+    try{await fetch(API_BASE+"/api/entry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date:p[0],no:+p[1],sz:p[2]===""?null:+p[2],plan:0,actual:0,note:""})});}catch(_){}
+  },400);}
+  let _mt;function pushMeta(){clearTimeout(_mt);_mt=setTimeout(async()=>{const s=metaSig();if(s===_metaSig)return;
+    try{const r=await fetch(API_BASE+"/api/meta",{method:"POST",headers:{"Content-Type":"application/json"},body:s});if(r.ok)_metaSig=s;setOnline(r.ok);}catch(_){setOnline(false);}
+  },600);}
+  function reconcile(){
+    const cur=new Map();state.entries.forEach(e=>cur.set(entKey(e),e));
+    cur.forEach((e,k)=>{const s=entSig(e);if(_pushed.get(k)!==s){apiEntry(e);_pushed.set(k,s);}});
+    for(const k of [..._pushed.keys()])if(!cur.has(k)){apiDel(k);_pushed.delete(k);}
+    pushMeta();
+  }
+  function applyServer(d){
+    if(d&&Array.isArray(d.entries))state.entries=d.entries.map(e=>({...e}));
+    if(d&&Array.isArray(d.acts)&&d.acts.length)state.acts=d.acts;
+    if(d&&Array.isArray(d.roster)&&d.roster.length)state.roster=d.roster;
+    if(d&&d.team)state.team=d.team;
+    TEAM=state.roster||TEAM;ACTIVITIES=state.acts;recomputeZones();
+    nextId=state.entries.reduce((m,e)=>Math.max(m,e.id||0),0)+1;
+    _pushed=new Map();state.entries.forEach(e=>_pushed.set(entKey(e),entSig(e)));
+    _metaSig=metaSig();
+    localStorage.setItem(KEY,JSON.stringify(state));
+  }
   function renderAllSafe(){try{refreshTeamSelects();}catch(e){}try{refreshActSelects();}catch(e){}renderSummary();renderReport();renderTeam();renderManage();renderEntry("pl","plan");renderEntry("ac","actual");}
-  async function loadFromServer(){const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
-    if(d&&Array.isArray(d.entries)&&d.entries.length){lastServer=stateSig(d);applyServer(d);renderAllSafe();}
-    else if(state.entries&&state.entries.length){const body=stateSig(state);try{const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.ok)lastServer=body;}catch(e){}}}
-  async function poll(){const a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))return;
+  async function syncPull(){
+    const a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))return;
     const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
-    if(d&&Array.isArray(d.entries)&&d.entries.length){const sig=stateSig(d);if(sig!==lastServer){lastServer=sig;applyServer(d);renderAllSafe();}}
-    else if(state.entries&&state.entries.length){const body=stateSig(state);try{const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.ok)lastServer=body;}catch(e){}}}
-  const _save=save;save=function(){_save();pushState();};
-  loadFromServer();setInterval(poll,4000);
+    const hasData=(d.entries&&d.entries.length)||(d.acts&&d.acts.length);
+    if(hasData){const sig=serverSig(d);if(sig!==_lastSrv){_lastSrv=sig;applyServer(d);renderAllSafe();}}
+    else if(state.entries&&state.entries.length){reconcile();}
+  }
+  const _save=save;save=function(){_save();reconcile();};
+  syncPull();setInterval(syncPull,4000);
   }
 }
 </script>
