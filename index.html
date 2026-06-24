@@ -190,7 +190,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:28px;paddi
   </section>
 
   <div class="toolbar">
-    <span class="savehint"><span class="pip"></span> ข้อมูลบันทึกในเครื่องนี้อัตโนมัติ</span>
+    <span class="savehint"><span class="pip"></span> <span id="syncdot">⚪ ออฟไลน์ (เก็บในเครื่อง)</span></span>
     <button class="btn" id="btn-export">⬇️ ดาวน์โหลดเป็น Excel</button>
   </div>
 
@@ -638,6 +638,29 @@ class Component extends DCLogic {
   /* init */
   const n=new Date();$("todaytxt").textContent=`แผน vs เกิดจริง · สรุปรายวัน/สัปดาห์/เดือน/ปี · วันนี้ ${n.getDate()} ${THSHORT[n.getMonth()]} ${String((n.getFullYear()+543)%100).padStart(2,"0")}`;
   renderSummary();renderReport();renderTeam();renderManage();renderEntry("pl","plan");renderEntry("ac","actual");
+
+  /* ===== ซิงก์ฐานข้อมูลกลาง (เซิร์ฟเวอร์ + Turso) — โหมด snapshot ทั้งก้อน ===== */
+  const API_BASE=(location.protocol==="file:")?"":location.origin;
+  let online=false,lastServer="";
+  function stateSig(d){return JSON.stringify({entries:d.entries,acts:d.acts,team:d.team,roster:d.roster,seedVer:d.seedVer});}
+  function setOnline(b){online=b;const el=$("syncdot");if(el)el.textContent=b?"🟢 ออนไลน์ (ฐานข้อมูลกลาง)":"⚪ ออฟไลน์ (เก็บในเครื่อง)";}
+  async function apiGet(){try{const r=await fetch(API_BASE+"/api/state",{cache:"no-store"});if(!r.ok)return null;return await r.json();}catch(e){return null;}}
+  let _pt;function pushState(){clearTimeout(_pt);_pt=setTimeout(async()=>{
+    try{const body=stateSig(state);const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});setOnline(r.ok);if(r.ok)lastServer=body;}catch(e){setOnline(false);}
+  },700);}
+  function applyServer(d){if(!d||!Array.isArray(d.entries))return false;
+    state.entries=d.entries;if(Array.isArray(d.acts)&&d.acts.length)state.acts=d.acts;if(Array.isArray(d.roster)&&d.roster.length)state.roster=d.roster;if(d.team)state.team=d.team;
+    TEAM=state.roster||TEAM;ACTIVITIES=state.acts;recomputeZones();nextId=state.entries.reduce((m,e)=>Math.max(m,e.id||0),0)+1;
+    localStorage.setItem(KEY,JSON.stringify(state));return true;}
+  function renderAllSafe(){try{refreshTeamSelects();}catch(e){}try{refreshActSelects();}catch(e){}renderSummary();renderReport();renderTeam();renderManage();renderEntry("pl","plan");renderEntry("ac","actual");}
+  async function loadFromServer(){const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
+    if(d&&Array.isArray(d.entries)&&d.entries.length){lastServer=stateSig(d);applyServer(d);renderAllSafe();}
+    else{const body=stateSig(state);try{const r=await fetch(API_BASE+"/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.ok)lastServer=body;}catch(e){}}}
+  async function poll(){const a=document.activeElement;if(a&&/INPUT|TEXTAREA|SELECT/.test(a.tagName))return;
+    const d=await apiGet();if(d===null){setOnline(false);return;}setOnline(true);
+    if(!d||!Array.isArray(d.entries))return;const sig=stateSig(d);if(sig===lastServer)return;lastServer=sig;applyServer(d);renderAllSafe();}
+  const _save=save;save=function(){_save();pushState();};
+  loadFromServer();setInterval(poll,4000);
   }
 }
 </script>
